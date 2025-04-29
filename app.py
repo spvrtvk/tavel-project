@@ -1,0 +1,607 @@
+from langchain.llms import OpenAI
+from langchain.chains import ConversationChain
+from langchain.memory import ConversationSummaryMemory
+from langchain.memory import ConversationBufferWindowMemory
+from langchain.prompts import PromptTemplate
+from flask import Flask, request, jsonify, send_from_directory
+from dotenv import load_dotenv
+load_dotenv()
+import os
+openai_api_key = os.environ.get("OPENAI_API_KEY")
+
+# Configuration de Flask
+app = Flask(__name__, static_folder='static')
+
+# Définition du prompt personnalisé pour l'agent de voyage
+# Nouveau template amélioré
+template = """**Role**: You're a bilingual travel expert assistant. Adapt your response style based on user intent:
+
+**Response Modes**:
+1. **Planning Mode** (user provides trip details):
+   - Required parameters: [Departure, Destination, Budget, Duration]
+   - If missing parameters → ask ONE specific question
+   - When complete → suggest 3 budget tiers with activities/accommodations
+
+2. **Advice Mode** (general travel questions):
+   - Answer concisely (5-6 sentences)
+   - Include pro tips (e.g., "Best time to visit...")
+   
+3. **Follow-up Mode** (contextual questions):
+   - Maintain previous trip parameters
+   - Expand on previous suggestions
+
+**Format Rules**:
+- Use emoji categories (🏨 Accommodation, 🚌 Transport)
+- Show price ranges
+- Separate sections with line breaks
+- Never use markdown
+
+**Examples**:
+User: "Paris trip from London with €2000 for 5 days"
+→ Check missing params → if complete:
+"**🏨 Mid-range Accommodation** (€100-150/night):
+• Hôtel Eiffel Trocadéro (€120) - 15min from Eiffel Tower..."
+
+User: "Best time to visit Tokyo?"
+→ "Spring (March-May) for cherry blossoms... Pro tip: Buy JR Pass in advance!"
+
+**Current Context**:
+{history}
+
+User: {input}
+Assistant:"""
+
+prompt = PromptTemplate(input_variables=["history", "input"], template=template)
+
+# Configuration améliorée
+llm = OpenAI(
+    openai_api_key=openai_api_key,
+    temperature=0.3,  # Réduit les hallucinations
+    model_name="gpt-3.5-turbo-instruct"  # Modèle plus performant
+)
+
+memory = ConversationBufferWindowMemory(
+    k=5,  # Garde les 5 derniers échanges
+    memory_key="history",
+    ai_prefix="Assistant",
+    human_prefix="User"
+)
+
+conversation = ConversationChain(
+    llm=llm,
+    memory=memory,
+    prompt=prompt,
+    verbose=False
+)
+
+# Placez votre fichier HTML dans un dossier 'static'
+@app.route('/')
+def index():
+    return send_from_directory('static', 'index.html')
+
+# Endpoint API pour traiter les messages
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    user_message = request.json.get('message', '')
+    
+    if user_message.lower() == 'exit':
+        return jsonify({'response': 'Goodbye and have a good trip!'})
+    
+    # Récupère la réponse du chatbot en gardant le contexte grâce à Langchain
+    try:
+        response = conversation.predict(input=user_message)
+        return jsonify({'response': response})
+    except Exception as e:
+        return jsonify({'response': f"Une erreur s'est produite: {str(e)}"})
+
+# Fonction pour créer le dossier static et y placer le fichier HTML
+def setup_static_folder():
+    if not os.path.exists('static'):
+        os.makedirs('static')
+    
+    # Écrire le HTML dans un fichier
+    with open('static/index.html', 'w', encoding='utf-8') as f:
+        f.write('''<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Find & Travel</title>
+    <style>
+        :root {
+            --primary-color: #5c46e3;
+            --bg-color: #f5f5f7;
+            --message-human-bg: #e1e1e6;
+            --message-ai-bg: #ffffff;
+            --text-color: #333333;
+            --border-radius: 12px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 24px;
+            background-color: white;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+            position: relative;
+            z-index: 10;
+        }
+
+        .logo {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--primary-color);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background-color: var(--primary-color);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+        }
+
+        .settings-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .settings-button:hover {
+            background-color: var(--bg-color);
+        }
+
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .message {
+            max-width: 85%;
+            padding: 14px 18px;
+            border-radius: var(--border-radius);
+            line-height: 1.5;
+            position: relative;
+            word-wrap: break-word;
+        }
+
+        .message.human {
+            background-color: var(--message-human-bg);
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.ai {
+            background-color: var(--message-ai-bg);
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .message-header {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .message.human .message-header {
+            color: #555555;
+        }
+
+        .message.ai .message-header {
+            color: var(--primary-color);
+        }
+
+        .message-content {
+            font-size: 15px;
+            white-space: pre-line;
+        }
+
+        .input-container {
+            padding: 16px 24px;
+            background-color: white;
+            box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.05);
+            position: relative;
+            z-index: 10;
+        }
+
+        .input-wrapper {
+            display: flex;
+            align-items: flex-end;
+            background-color: var(--bg-color);
+            border-radius: var(--border-radius);
+            padding: 8px 16px;
+            position: relative;
+        }
+
+        .input-field {
+            flex: 1;
+            border: none;
+            background: transparent;
+            padding: 10px 0;
+            resize: none;
+            max-height: 150px;
+            font-size: 15px;
+            outline: none;
+        }
+
+        .send-button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: 8px;
+            transition: transform 0.2s;
+        }
+
+        .send-button:hover {
+            transform: scale(1.05);
+        }
+
+        .send-button:disabled {
+            background-color: #b4b4b4;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .assistant-typing {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 8px 16px;
+            background-color: var(--message-ai-bg);
+            border-radius: var(--border-radius);
+            align-self: flex-start;
+            font-size: 14px;
+            color: #666;
+            margin-top: -8px;
+            animation: fadeIn 0.3s;
+        }
+
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+        }
+
+        .typing-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background-color: #888;
+            animation: typingAnimation 1.4s infinite;
+        }
+
+        .typing-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .typing-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes typingAnimation {
+            0%, 60%, 100% {
+                transform: translateY(0);
+                opacity: 0.6;
+            }
+            30% {
+                transform: translateY(-4px);
+                opacity: 1;
+            }
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+
+        .welcome-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .welcome-title {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--primary-color);
+        }
+
+        .welcome-description {
+            font-size: 16px;
+            color: #666;
+            max-width: 550px;
+            margin-bottom: 28px;
+            line-height: 1.5;
+        }
+
+        .examples-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 12px;
+            max-width: 800px;
+            width: 100%;
+        }
+
+        .example-card {
+            background-color: white;
+            border-radius: var(--border-radius);
+            padding: 14px;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.15s;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .example-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .example-title {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 6px;
+            color: var(--primary-color);
+        }
+
+        .example-text {
+            font-size: 13px;
+            color: #666;
+        }
+
+        /* Responsive styles */
+        @media (max-width: 768px) {
+            .message {
+                max-width: 90%;
+            }
+            
+            .examples-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">
+            <div class="logo-icon">🌍</div>
+            <span>Find & Travel</span>
+        </div>
+        <button class="settings-button">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+        </button>
+    </div>
+
+    <div id="conversation-container" class="chat-container">
+        <div id="welcome-screen" class="welcome-container">
+            <h1 class="welcome-title">I am here to help you plan your trip. How can I assist you with your travel plans?</h1>
+            <p class="welcome-description">I am your virtual travel agent powered by LLM, ready to suggest activities according to your budget, your preferences, and your departure location.</p>
+            <div class="examples-container">
+                <div class="example-card" data-example="I have a budget of $500 and I want to do some outdoor activities in Paris.">
+                    <div class="example-title">Outdoor Activities</div>
+                    <div class="example-text">I have a budget of $500 and I want to do some outdoor activities in Paris.</div>
+                </div>
+                <div class="example-card" data-example="What are some cultural activities I can do in Rome for about $300?">
+                    <div class="example-title">Cultural Activities</div>
+                    <div class="example-text">What are some cultural activities I can do in Rome for about $300?</div>
+                </div>
+                <div class="example-card" data-example="I'm looking for food experiences in Tokyo with a budget of $200.">
+                    <div class="example-title">Culinary Experiences</div>
+                    <div class="example-text">I'm looking for food experiences in Tokyo with a budget of $200.</div>
+                </div>
+                <div class="example-card" data-example="What adventure activities can I do in New Zealand with $1000?">
+                    <div class="example-title">Adventure Activities</div>
+                    <div class="example-text">What adventure activities can I do in New Zealand with $1000?</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="input-container">
+        <div class="input-wrapper">
+            <textarea class="input-field" id="user-input" placeholder="Write your message..." rows="1"></textarea>
+            <button class="send-button" id="send-button" disabled>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const inputField = document.getElementById('user-input');
+            const sendButton = document.getElementById('send-button');
+            const conversationContainer = document.getElementById('conversation-container');
+            const welcomeScreen = document.getElementById('welcome-screen');
+            
+            // Auto-resize textarea as user types
+            inputField.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = (this.scrollHeight) + 'px';
+                
+                // Enable/disable send button based on input
+                sendButton.disabled = !this.value.trim();
+            });
+
+            // Handle sending messages
+            async function sendMessage() {
+                const message = inputField.value.trim();
+                if (!message) return;
+                
+                // Remove welcome screen if visible
+                if (welcomeScreen && welcomeScreen.parentNode) {
+                    conversationContainer.removeChild(welcomeScreen);
+                }
+
+                // Add user message
+                addMessage(message, 'human');
+                
+                // Clear and reset input field
+                inputField.value = '';
+                inputField.style.height = 'auto';
+                sendButton.disabled = true;
+                
+                // Show typing indicator
+                showTypingIndicator();
+                
+                try {
+                    // Send message to backend API
+                    const response = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ message: message }),
+                    });
+                    
+                    const data = await response.json();
+                    
+                    // Remove typing indicator
+                    removeTypingIndicator();
+                    
+                    // Add AI response
+                    addMessage(data.response, 'ai');
+                } catch (error) {
+                    // Remove typing indicator
+                    removeTypingIndicator();
+                    
+                    // Add error message
+                    addMessage("Sorry, an error occurred. Please try again.", 'ai');
+                    console.error('Error:', error);
+                }
+                
+                // Scroll to bottom
+                conversationContainer.scrollTop = conversationContainer.scrollHeight;
+            }
+
+            // Add a message to the conversation
+            function addMessage(content, sender) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${sender}`;
+                
+                const header = document.createElement('div');
+                header.className = 'message-header';
+                header.textContent = sender === 'human' ? 'You' : 'Travel agent';
+                
+                const messageContent = document.createElement('div');
+                messageContent.className = 'message-content';
+                messageContent.textContent = content;
+                
+                messageDiv.appendChild(header);
+                messageDiv.appendChild(messageContent);
+                
+                conversationContainer.appendChild(messageDiv);
+            }
+
+            // Show typing indicator
+            function showTypingIndicator() {
+                const typingDiv = document.createElement('div');
+                typingDiv.className = 'assistant-typing';
+                typingDiv.id = 'typing-indicator';
+                
+                typingDiv.innerHTML = `
+                    <div>Agent is writing</div>
+                    <div class="typing-indicator">
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                        <div class="typing-dot"></div>
+                    </div>
+                `;
+                
+                conversationContainer.appendChild(typingDiv);
+            }
+
+            // Remove typing indicator
+            function removeTypingIndicator() {
+                const typingIndicator = document.getElementById('typing-indicator');
+                if (typingIndicator) {
+                    conversationContainer.removeChild(typingIndicator);
+                }
+            }
+
+            // Handle send button click
+            sendButton.addEventListener('click', sendMessage);
+            
+            // Handle Enter key press (with Shift+Enter for new line)
+            inputField.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!sendButton.disabled) {
+                        sendMessage();
+                    }
+                }
+            });
+
+            // Handle example card clicks
+            document.querySelectorAll('.example-card').forEach(card => {
+                card.addEventListener('click', function() {
+                    const exampleText = this.getAttribute('data-example');
+                    inputField.value = exampleText;
+                    inputField.style.height = 'auto';
+                    inputField.style.height = (inputField.scrollHeight) + 'px';
+                    sendButton.disabled = false;
+                    inputField.focus();
+                });
+            });
+        });
+    </script>
+</body>
+</html>''')
+
+if __name__ == '__main__':
+    # Créer les fichiers statiques
+    setup_static_folder()
+    # Lancer l'application Flask
+    app.run(host='0.0.0.0', port=8080, debug=True)
